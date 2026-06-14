@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "or-solver"
+dynamic = ["version"]
+description = "运筹学模型求解工具 — 兰州大学管理学院"
+requires-python = ">=3.10"
+dependencies = [
+    "scipy>=1.10",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "pulp>=2.7",
+]
+
+[project.scripts]
+or-solver = "or_solver.app:App"
+
+[tool.hatch.version]
+path = "src/or_solver/__version__.py"
+pattern = '__version__ = "(?P<version>[^"]+)"'
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/or_solver"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "main.py",
+    "tests/",
+    "pyproject.toml",
+    "requirements.txt",
+]
