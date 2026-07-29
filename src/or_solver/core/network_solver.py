@@ -143,3 +143,147 @@ def prim_mst(
         total_weight=total,
         steps=steps,
     )
+
+
+@dataclass
+class FlowResult:
+    status: str
+    value: float = 0.0
+    cost: float = 0.0
+    flows: list[tuple[int, int, float, float]] = field(default_factory=list)  # u, v, flow, cost
+    distances: list[list[float]] = field(default_factory=list)
+    message: str = ""
+
+
+def max_flow(n: int, edges: list[tuple[int, int, float, float]], src: int, dst: int) -> FlowResult:
+    """Edmonds-Karp 最大流。节点编号入参为 0-based。"""
+    from collections import deque
+
+    cap = [[0.0] * n for _ in range(n)]
+    for u, v, c, _cost in edges:
+        cap[u][v] += c
+    flow = [[0.0] * n for _ in range(n)]
+    total = 0.0
+
+    while True:
+        parent = [-1] * n
+        parent[src] = src
+        q = deque([src])
+        while q and parent[dst] == -1:
+            u = q.popleft()
+            for v in range(n):
+                if parent[v] == -1 and cap[u][v] - flow[u][v] > 1e-9:
+                    parent[v] = u
+                    q.append(v)
+        if parent[dst] == -1:
+            break
+        aug = math.inf
+        v = dst
+        while v != src:
+            u = parent[v]
+            aug = min(aug, cap[u][v] - flow[u][v])
+            v = u
+        v = dst
+        while v != src:
+            u = parent[v]
+            flow[u][v] += aug
+            flow[v][u] -= aug
+            v = u
+        total += aug
+
+    used = [(u + 1, v + 1, flow[u][v], 0.0) for u in range(n) for v in range(n) if flow[u][v] > 1e-9]
+    return FlowResult(status="optimal", value=total, flows=used)
+
+
+def min_cost_flow(
+    n: int,
+    edges: list[tuple[int, int, float, float]],
+    src: int,
+    dst: int,
+    demand: float | None = None,
+) -> FlowResult:
+    """最小费用流；demand=None 时求最小费用最大流。"""
+    graph: list[list[dict]] = [[] for _ in range(n)]
+
+    def add_edge(u: int, v: int, cap: float, cost: float) -> None:
+        fwd = {"to": v, "rev": len(graph[v]), "cap": cap, "cost": cost, "flow": 0.0}
+        rev = {"to": u, "rev": len(graph[u]), "cap": 0.0, "cost": -cost, "flow": 0.0}
+        graph[u].append(fwd)
+        graph[v].append(rev)
+
+    for u, v, cap, cost in edges:
+        add_edge(u, v, cap, cost)
+
+    total_flow = 0.0
+    total_cost = 0.0
+    target = math.inf if demand is None else demand
+
+    while total_flow + 1e-9 < target:
+        dist = [math.inf] * n
+        inq = [False] * n
+        pv = [-1] * n
+        pe = [-1] * n
+        dist[src] = 0.0
+        queue = [src]
+        inq[src] = True
+        while queue:
+            u = queue.pop(0)
+            inq[u] = False
+            for i, e in enumerate(graph[u]):
+                if e["cap"] > 1e-9 and dist[u] + e["cost"] < dist[e["to"]] - 1e-9:
+                    dist[e["to"]] = dist[u] + e["cost"]
+                    pv[e["to"]] = u
+                    pe[e["to"]] = i
+                    if not inq[e["to"]]:
+                        queue.append(e["to"])
+                        inq[e["to"]] = True
+        if dist[dst] == math.inf:
+            break
+
+        aug = target - total_flow
+        v = dst
+        while v != src:
+            u = pv[v]
+            e = graph[u][pe[v]]
+            aug = min(aug, e["cap"])
+            v = u
+        v = dst
+        while v != src:
+            u = pv[v]
+            e = graph[u][pe[v]]
+            rev = graph[v][e["rev"]]
+            e["cap"] -= aug
+            rev["cap"] += aug
+            e["flow"] += aug
+            rev["flow"] -= aug
+            total_cost += aug * e["cost"]
+            v = u
+        total_flow += aug
+
+        if demand is None and aug <= 1e-9:
+            break
+
+    if demand is not None and total_flow + 1e-9 < demand:
+        return FlowResult(status="infeasible", value=total_flow, cost=total_cost, message="无法满足指定流量")
+
+    used: list[tuple[int, int, float, float]] = []
+    for u in range(n):
+        for e in graph[u]:
+            if e["flow"] > 1e-9:
+                used.append((u + 1, e["to"] + 1, e["flow"], e["cost"]))
+    return FlowResult(status="optimal", value=total_flow, cost=total_cost, flows=used)
+
+
+def floyd_warshall(n: int, edges: list[tuple[int, int, float, float]]) -> FlowResult:
+    """Floyd-Warshall 全源最短路。边元组中的 cost 字段作为距离。"""
+    dist = [[math.inf] * n for _ in range(n)]
+    for i in range(n):
+        dist[i][i] = 0.0
+    for u, v, _cap, cost in edges:
+        dist[u][v] = min(dist[u][v], cost)
+    for k in range(n):
+        for i in range(n):
+            for j in range(n):
+                if dist[i][k] + dist[k][j] < dist[i][j]:
+                    dist[i][j] = dist[i][k] + dist[k][j]
+    return FlowResult(status="optimal", distances=dist)

@@ -4,13 +4,15 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox
 
-from or_solver.constants import BTN_GRAY, BTN_GREEN, FONT_SMALL
+from or_solver.constants import BTN_GREEN, FONT_SMALL
 from or_solver.core.decision_solver import (
     solve_expected_value,
+    solve_expected_utility,
     solve_hurwicz,
     solve_laplace,
     solve_maximax,
     solve_maximin,
+    solve_perfect_information,
     solve_regret,
 )
 from or_solver.ui.mixins import TableEditMixin
@@ -56,7 +58,7 @@ _GUIDE_DATA: dict = {
             "3. 每个方案取其所有后悔值中的最大值。\n4. 选择最大后悔值最小的方案。"
         ),
     },
-    "期望值准则": {
+        "期望值准则": {
         "model_title": "期望值准则数学表述模型",
         "formula_lines": [
             r"Z = \max_{1 \leq i \leq n} \left[ E(S_i) \right]",
@@ -67,6 +69,40 @@ _GUIDE_DATA: dict = {
             "计算步骤：\n1. 在首行填入各自然状态的概率，且概率之和应等于 1。\n"
             "2. 对每个方案，将各状态收益与对应概率相乘后求和。\n"
             "3. 比较各方案期望收益，选择最大者。"
+        ),
+    },
+    "全情报准则": {
+        "model_title": "全情报准则数学表述模型",
+        "formula_lines": [
+            r"EVPI = EV_{wPI} - EV_{woPI}",
+            r"EV_{wPI} = \sum_j p_j \max_i(a_{ij})",
+        ],
+        "body": (
+            "全情报准则用于衡量《完全知道自然状态》时能带来的最大期望改进。\n\n"
+            "计算步骤：\n1. 首行输入各自然状态概率。\n"
+            "2. 对每个状态取该列最大收益，计算完全信息期望值。\n"
+            "3. 与无情报条件下的最大期望收益比较，差额即完全情报价值。"
+        ),
+    },
+    "部分情报准则": {
+        "model_title": "部分情报准则数学表述模型",
+        "formula_lines": [
+            r"Z = \max_i \sum_j p_j a_{ij}",
+        ],
+        "body": (
+            "部分情报准则用于在已经获得某种部分信息、并能修正概率或收益矩阵后进行决策。\n\n"
+            "使用方法：将部分信息对应的后验概率填入首行，将修正后的收益矩阵填入表格，程序按期望值选择最优方案。"
+        ),
+    },
+    "效用值准则": {
+        "model_title": "效用值准则数学表述模型",
+        "formula_lines": [
+            r"EU_i = \sum_j p_j u(a_{ij})",
+            r"Z = \max_i EU_i",
+        ],
+        "body": (
+            "效用值准则用效用而不是原始收益来比较方案，适合不同收益区间风险偏好不一致的场景。\n\n"
+            "使用方法：首行输入概率，表格中输入各方案在各状态下的效用值，程序计算期望效用并选择最大者。"
         ),
     },
     "乐观系数准则": {
@@ -120,17 +156,14 @@ class DecisionPage(tk.Frame, TableEditMixin):
     def _build_header(self):
         hdr = tk.Frame(self, bg="#d7ccc8")
         hdr.pack(fill="x")
-        tk.Label(hdr, text=f"运筹学模型求解系统———{self.mode}",
-                 font=("微软雅黑", 13, "bold"), bg="#d7ccc8").pack(side="left", padx=10, pady=6)
         ctrl = tk.Frame(hdr, bg="#d7ccc8")
-        ctrl.pack(side="left", padx=10)
+        ctrl.pack(anchor="center", pady=6)
         tk.Label(ctrl, text="方案数:", bg="#d7ccc8", font=FONT_SMALL).pack(side="left")
         tk.Spinbox(ctrl, from_=2, to=15, textvariable=self.n_alt, width=4, font=FONT_SMALL).pack(side="left", padx=4)
         tk.Label(ctrl, text="自然状态数:", bg="#d7ccc8", font=FONT_SMALL).pack(side="left", padx=(8, 0))
         tk.Spinbox(ctrl, from_=2, to=15, textvariable=self.n_state, width=4, font=FONT_SMALL).pack(side="left", padx=4)
-        make_button(hdr, "确  定", self._build_table, bg=BTN_GREEN, width=8).pack(side="left", padx=6)
-        make_button(hdr, "求  解", self._solve, bg="#e53935", fg="white", width=8).pack(side="left", padx=4)
-        make_button(hdr, "返  回", self.controller.show_menu, bg=BTN_GRAY, width=8).pack(side="left", padx=4)
+        make_button(ctrl, "确  定", self._build_table, bg=BTN_GREEN, width=8).pack(side="left", padx=6)
+        make_button(ctrl, "求  解", self._solve, bg="#e53935", fg="white", width=8).pack(side="left", padx=4)
         self.body = tk.Frame(self, bg="#f5f0e8")
         self.body.pack(fill="both", expand=True, padx=10, pady=6)
         self._build_table()
@@ -218,7 +251,8 @@ class DecisionPage(tk.Frame, TableEditMixin):
         HDR_BG  = "#ffe0b2"; LBL_BG  = "#fff3e0"
         CELL_BG = "#e8f5e9"; PROB_BG = "#fce4ec"
 
-        has_prob  = self.mode == "期望值准则"
+        prob_modes = {"期望值准则", "全情报准则", "部分情报准则", "效用值准则"}
+        has_prob  = self.mode in prob_modes
         data_rows = m + (1 if has_prob else 0)
         total_w   = LBL_W + n * COL_W
         total_h   = HDR_H + data_rows * ROW_H
@@ -297,6 +331,97 @@ class DecisionPage(tk.Frame, TableEditMixin):
         self.result_frame.pack(fill="x", padx=14, pady=12, anchor="w")
         self.entries_built = True
 
+    def _snapshot_entries(self) -> dict:
+        if not self.entries_built:
+            return {}
+        return {
+            "probs": [e.get() for e in getattr(self, "prob_entries", [])],
+            "mat": [[e.get() for e in row] for row in self.mat_entries],
+        }
+
+    def _restore_entries(self, data: dict) -> None:
+        for j, value in enumerate(data.get("probs", [])):
+            if j < len(getattr(self, "prob_entries", [])):
+                self.prob_entries[j].delete(0, "end")
+                self.prob_entries[j].insert(0, value)
+        for i, row in enumerate(data.get("mat", [])):
+            if i >= len(self.mat_entries):
+                break
+            for j, value in enumerate(row):
+                if j < len(self.mat_entries[i]):
+                    self.mat_entries[i][j].delete(0, "end")
+                    self.mat_entries[i][j].insert(0, value)
+
+    def _delete_selected_row(self) -> None:
+        if not self.entries_built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        if cell is None or cell[0] <= 0:
+            messagebox.showinfo("删除方案", "请先选中要删除的方案行")
+            return
+        if self.n_alt.get() <= 2:
+            messagebox.showinfo("删除方案", "至少保留 2 个方案")
+            return
+        remove_i = cell[0] - 1
+        data = self._snapshot_entries()
+        data["mat"].pop(remove_i)
+        self.n_alt.set(self.n_alt.get() - 1)
+        self._build_table()
+        self._restore_entries(data)
+
+    def _insert_selected_row(self) -> None:
+        if not self.entries_built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        insert_i = self.n_alt.get() if cell is None or cell[0] <= 0 else min(cell[0], self.n_alt.get())
+        data = self._snapshot_entries()
+        data["mat"].insert(insert_i, [""] * self.n_state.get())
+        self.n_alt.set(self.n_alt.get() + 1)
+        self._build_table()
+        self._restore_entries(data)
+
+    def _delete_selected_col(self) -> None:
+        if not self.entries_built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        if cell is None:
+            messagebox.showinfo("删除状态", "请先选中要删除的自然状态列")
+            return
+        remove_j = cell[1]
+        if remove_j >= self.n_state.get():
+            messagebox.showinfo("删除状态", "请选择收益矩阵中的状态列")
+            return
+        if self.n_state.get() <= 2:
+            messagebox.showinfo("删除状态", "至少保留 2 个自然状态")
+            return
+        data = self._snapshot_entries()
+        if remove_j < len(data["probs"]):
+            data["probs"].pop(remove_j)
+        for row in data["mat"]:
+            if remove_j < len(row):
+                row.pop(remove_j)
+        self.n_state.set(self.n_state.get() - 1)
+        self._build_table()
+        self._restore_entries(data)
+
+    def _insert_selected_col(self) -> None:
+        if not self.entries_built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        insert_j = self.n_state.get() if cell is None else min(cell[1] + 1, self.n_state.get())
+        data = self._snapshot_entries()
+        if data["probs"]:
+            data["probs"].insert(insert_j, "")
+        for row in data["mat"]:
+            row.insert(insert_j, "")
+        self.n_state.set(self.n_state.get() + 1)
+        self._build_table()
+        self._restore_entries(data)
+
     # ── 剪贴板粘贴 ───────────────────────────────────────
     def _paste_from_clipboard(self, event=None):
         """Ctrl+V 从剪贴板粘贴 TSV 收益矩阵，自动跳过标题行列。"""
@@ -360,7 +485,7 @@ class DecisionPage(tk.Frame, TableEditMixin):
 
         # ── 期望值准则：识别概率首行 ──────────────────────
         data_start = 0
-        if (self.mode == "期望值准则"
+        if (self.mode in {"期望值准则", "全情报准则", "部分情报准则", "效用值准则"}
                 and hasattr(self, "prob_entries") and self.prob_entries
                 and data):
             try:
@@ -536,6 +661,35 @@ class DecisionPage(tk.Frame, TableEditMixin):
                 self._draw_expected_result(mat, result.scores, result.best_value,
                                            result.best_index, probs)
                 return
+            elif self.mode == "全情报准则":
+                probs = [float(self.prob_entries[j].get() or 0) for j in range(n)]
+                result = solve_perfect_information(mat, probs)
+                lines = ["全情报分析："]
+                lines.append("各方案无情报期望收益：")
+                for i, s in enumerate(result.scores):
+                    lines.append(f"  方案{i+1}: {s:.4f}")
+                lines.append(
+                    "\n各状态最优收益: "
+                    + ", ".join(f"状态{j+1}={v:.4f}" for j, v in enumerate(result.extra["state_best_values"]))
+                )
+                lines.append(f"无情报最大期望收益 EVwoPI = {result.extra['expected_value_without_information']:.4f}")
+                lines.append(f"全情报期望收益 EVwPI = {result.extra['expected_value_with_perfect_information']:.4f}")
+                lines.append(f"完全情报价值 EVPI = {result.extra['expected_value_of_perfect_information']:.4f}")
+                lines.append(f"\n无情报条件下最优方案: 方案{result.best_index+1}")
+            elif self.mode == "部分情报准则":
+                probs = [float(self.prob_entries[j].get() or 0) for j in range(n)]
+                result = solve_expected_value(mat, probs)
+                lines = ["部分情报准则（按输入的后验概率/修正收益矩阵计算）："]
+                for i, s in enumerate(result.scores):
+                    lines.append(f"  方案{i+1}: 期望收益 = {s:.4f}")
+                lines.append(f"\n最优方案: 方案{result.best_index+1}，期望收益 = {result.best_value:.4f}")
+            elif self.mode == "效用值准则":
+                probs = [float(self.prob_entries[j].get() or 0) for j in range(n)]
+                result = solve_expected_utility(mat, probs)
+                lines = ["效用值准则："]
+                for i, s in enumerate(result.scores):
+                    lines.append(f"  方案{i+1}: 期望效用 = {s:.4f}")
+                lines.append(f"\n最优方案: 方案{result.best_index+1}，最大期望效用 = {result.best_value:.4f}")
             elif self.mode == "乐观系数准则":
                 alpha = self.alpha_var.get()
                 result = solve_hurwicz(mat, alpha)

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from or_solver.core.pulp_compat import solve_mip_problem
+
 
 @dataclass
 class SchedulingResult:
@@ -29,31 +31,34 @@ def solve_shift_schedule(
         demands: 各时段最少需求人数列表。
         work_days: 每人连续工作天数（k）。
     """
-    from scipy.optimize import linprog
+    try:
+        import pulp
+    except ImportError as exc:
+        return SchedulingResult(status="infeasible", message=f"missing pulp: {exc}")
 
     n = len(demands)
-    A_ub: list[list[float]] = []
-    b_ub: list[float] = []
+    if n == 0:
+        return SchedulingResult(status="infeasible", message="period count must be positive")
+    if work_days < 1 or work_days > n:
+        return SchedulingResult(status="infeasible", message="work_days must be between 1 and period count")
+    if any(v < 0 for v in demands):
+        return SchedulingResult(status="infeasible", message="demands must be non-negative")
 
+    prob = pulp.LpProblem("ShiftScheduling", pulp.LpMinimize)
+    xs = [
+        prob.add_variable(f"x{i+1}", lowBound=0, cat="Integer")
+        for i in range(n)
+    ]
+    prob += pulp.lpSum(xs)
     for i in range(n):
-        row = [0.0] * n
-        for j in range(work_days):
-            row[(i - j) % n] = 1.0
-        A_ub.append([-v for v in row])
-        b_ub.append(-demands[i])
+        prob += pulp.lpSum(xs[(i - j) % n] for j in range(work_days)) >= demands[i]
 
-    res = linprog(
-        [1.0] * n,
-        A_ub=A_ub,
-        b_ub=b_ub,
-        bounds=[(0, None)] * n,
-        method="highs",
-    )
+    solve_mip_problem(prob, pulp, msg=0)
+    status = pulp.LpStatus[prob.status]
+    if status != "Optimal":
+        return SchedulingResult(status="infeasible", message=f"solver status: {status}")
 
-    if not res.success:
-        return SchedulingResult(status="infeasible", message=res.message)
-
-    x = list(res.x)
+    x = [float(pulp.value(v) or 0.0) for v in xs]
     total = sum(x)
     actual = [sum(x[(i - j) % n] for j in range(work_days)) for i in range(n)]
 

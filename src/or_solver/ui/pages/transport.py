@@ -5,7 +5,7 @@ import re
 import tkinter as tk
 from tkinter import messagebox
 
-from or_solver.constants import FONT_SMALL, BTN_GREEN, BTN_GRAY, xname
+from or_solver.constants import FONT_SMALL, BTN_GREEN, xname
 from or_solver.core.transport_solver import solve_transport, solve_assignment, parse_cost
 from or_solver.utils.expr_parser import normalize_expr
 from or_solver.ui.mixins import TableEditMixin
@@ -13,65 +13,72 @@ from or_solver.ui.widgets import make_button
 
 
 class TransportPage(tk.Frame, TableEditMixin):
+    PAGE_BG = "#f3efe8"
+    BAR_BG = "#e1d8d2"
+    PANEL_BG = "#fbfaf4"
+    PANEL_LINE = "#c9c0b5"
+    HEADER_BG = "#f4d39e"
+    COST_BG = "#e6f3e8"
+    SUPPLY_BG = "#fff5ba"
+    DEMAND_BG = "#e2f1fb"
+    RESULT_BG = "#fffbe6"
+    TOP_CARD_MIN_W = 560
+    TOP_CARD_MIN_H = 220
+
     def __init__(self, master: tk.Widget, controller, mode: str = "平衡"):
-        super().__init__(master, bg="#f5f0e8")
+        super().__init__(master, bg=self.PAGE_BG)
         self.controller = controller
         self.mode = mode  # 平衡 / 产大于销 / 销大于产 / 指派
         self.n_src = tk.IntVar(value=3)
         self.n_dst = tk.IntVar(value=3)
         self.entries_built = False
+        self.virtual_src_rows: set[int] = set()
+        self.virtual_dst_cols: set[int] = set()
         self._build_header()
 
     def _build_header(self):
-        title_map = {
-            "平衡": "产销平衡问题", "产大于销": "产大于销问题",
-            "销大于产": "销大于产问题", "指派": "指派问题",
-        }
-        hdr = tk.Frame(self, bg="#d7ccc8")
+        hdr = tk.Frame(self, bg=self.BAR_BG, highlightthickness=1, highlightbackground="#b9afa7")
         hdr.pack(fill="x")
-        tk.Label(hdr, text=f"运筹学模型求解系统———{title_map[self.mode]}",
-                 font=("微软雅黑", 13, "bold"), bg="#d7ccc8").pack(side="left", padx=10, pady=6)
-        ctrl = tk.Frame(hdr, bg="#d7ccc8")
-        ctrl.pack(side="left", padx=10)
+
+        controls = tk.Frame(hdr, bg=self.BAR_BG)
+        controls.pack(anchor="center", pady=8)
+
+        ctrl = tk.Frame(controls, bg=self.PANEL_BG, highlightthickness=1, highlightbackground="#b9afa7")
+        ctrl.pack(side="left", padx=(0, 12))
         if self.mode == "指派":
-            tk.Label(ctrl, text="人数/任务数:", bg="#d7ccc8", font=FONT_SMALL).pack(side="left")
+            tk.Label(ctrl, text="人数/任务数", bg=self.PANEL_BG, font=FONT_SMALL).pack(side="left", padx=(12, 4), pady=6)
             tk.Spinbox(ctrl, from_=2, to=15, textvariable=self.n_src, width=4,
-                       font=FONT_SMALL).pack(side="left", padx=4)
+                       font=FONT_SMALL, relief="sunken").pack(side="left", padx=(0, 12), pady=6)
         else:
-            tk.Label(ctrl, text="产地数:", bg="#d7ccc8", font=FONT_SMALL).pack(side="left")
+            tk.Label(ctrl, text="产地数", bg=self.PANEL_BG, font=FONT_SMALL).pack(side="left", padx=(12, 4), pady=6)
             tk.Spinbox(ctrl, from_=1, to=15, textvariable=self.n_src, width=4,
-                       font=FONT_SMALL).pack(side="left", padx=4)
-            tk.Label(ctrl, text="销地数:", bg="#d7ccc8", font=FONT_SMALL).pack(side="left", padx=(8, 0))
+                       font=FONT_SMALL, relief="sunken").pack(side="left", padx=(0, 12), pady=6)
+            tk.Label(ctrl, text="销地数", bg=self.PANEL_BG, font=FONT_SMALL).pack(side="left", padx=(0, 4), pady=6)
             tk.Spinbox(ctrl, from_=1, to=15, textvariable=self.n_dst, width=4,
-                       font=FONT_SMALL).pack(side="left", padx=4)
-        make_button(hdr, "确  定", self._build_table, bg=BTN_GREEN, width=8).pack(side="left", padx=6)
-        make_button(hdr, "求  解", self._solve, bg="#e53935", fg="white", width=8).pack(side="left", padx=4)
-        make_button(hdr, "返  回", self.controller.show_menu, bg=BTN_GRAY, width=8).pack(side="left", padx=4)
+                       font=FONT_SMALL, relief="sunken").pack(side="left", padx=(0, 12), pady=6)
 
-        expr_frame = tk.Frame(self, bg="#f0ece4", relief="groove", bd=1)
-        expr_frame.pack(fill="x", padx=10, pady=(4, 0))
-        expr_top = tk.Frame(expr_frame, bg="#f0ece4")
-        expr_top.pack(fill="x", padx=6, pady=(4, 2))
-        tk.Label(expr_top, text="模型表达式（输入或粘贴）:",
-                 bg="#f0ece4", font=("宋体", 9, "bold")).pack(side="left")
-        tk.Button(expr_top, text="解析填入表格", command=self._expr_to_table,
-                  bg="#90ee90", font=("宋体", 9), width=12).pack(side="left", padx=6)
-        tk.Button(expr_top, text="从表格刷新", command=self._table_to_expr,
-                  bg="#87ceeb", font=("宋体", 9), width=10).pack(side="left", padx=2)
-        tk.Button(expr_top, text="清  空",
-                  command=lambda: self.expr_text.delete("1.0", "end"),
-                  bg="#ffcccc", font=("宋体", 9), width=6).pack(side="left", padx=2)
-        self.expr_text = tk.Text(expr_frame, font=("Consolas", 10), bg="#fffff0",
-                                 relief="sunken", bd=1, height=4)
-        self.expr_text.pack(fill="x", padx=6, pady=(0, 4))
-        if self.mode == "指派":
-            placeholder = "# 费用矩阵（每行一个工人，空格分隔）\n3 2 4\n5 3 6\n8 7 2"
-        else:
-            placeholder = "# 费用矩阵（每行一个产地，空格分隔）\n3 2 4\n5 3 6\n产量: 100 150\n销量: 80 90 80"
-        self.expr_text.insert("1.0", placeholder)
+        actions = tk.Frame(controls, bg=self.BAR_BG)
+        actions.pack(side="left")
+        make_button(actions, "确定", self._build_table, bg=BTN_GREEN, width=7).pack(side="left", padx=(0, 10))
+        make_button(actions, "求解", self._solve, bg="#e53935", fg="white", width=7).pack(side="left")
 
-        self.body = tk.Frame(self, bg="#f5f0e8")
-        self.body.pack(fill="both", expand=True, padx=10, pady=6)
+        body_shell = tk.Frame(self, bg=self.PAGE_BG)
+        body_shell.pack(fill="both", expand=True)
+        self.body_canvas = tk.Canvas(body_shell, bg=self.PAGE_BG, highlightthickness=0, bd=0)
+        self.body_vsb = tk.Scrollbar(body_shell, orient="vertical", command=self.body_canvas.yview)
+        self.body_canvas.configure(yscrollcommand=self.body_vsb.set)
+        self.body_vsb.pack(side="right", fill="y")
+        self.body_canvas.pack(side="left", fill="both", expand=True)
+        self.body = tk.Frame(self.body_canvas, bg=self.PAGE_BG)
+        self._body_window = self.body_canvas.create_window((0, 0), window=self.body, anchor="n")
+        self.body.bind("<Configure>", self._sync_body_scrollregion)
+        self.body_canvas.bind("<Configure>", self._sync_body_width)
+
+    def _sync_body_scrollregion(self, _event=None) -> None:
+        self.body_canvas.configure(scrollregion=self.body_canvas.bbox("all"))
+
+    def _sync_body_width(self, event) -> None:
+        self.body_canvas.itemconfigure(self._body_window, width=event.width)
 
     # ── TableEditMixin 接口 ──────────────────────────────
     def _entry_frame(self): return self.body
@@ -122,52 +129,294 @@ class TransportPage(tk.Frame, TableEditMixin):
         m = self.n_src.get()
         n = self.n_dst.get() if self.mode != "指派" else m
 
-        tk.Label(self.body, text="费用矩阵 (单位运费)", bg="#f5f0e8",
-                 font=("微软雅黑", 10, "bold")).grid(row=0, column=0, sticky="w", columnspan=n + 2)
+        content = tk.Frame(self.body, bg=self.PAGE_BG)
+        content.pack(anchor="n", pady=(4, 18))
+        content.grid_columnconfigure(0, weight=1, uniform="transport_top")
+        content.grid_columnconfigure(1, weight=1, uniform="transport_top")
+        self._lp_result_parent = content
+
+        table_card = tk.Frame(
+            content,
+            bg=self.PANEL_BG,
+            width=self.TOP_CARD_MIN_W,
+            height=self.TOP_CARD_MIN_H,
+            highlightthickness=1,
+            highlightbackground=self.PANEL_LINE,
+        )
+        table_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12), pady=(0, 16))
+        table_card.grid_propagate(False)
+        table_area = tk.Frame(table_card, bg=self.PANEL_BG)
+        table_area.pack(fill="both", expand=True, padx=16, pady=14)
+
+        result_card = tk.Frame(
+            content,
+            bg=self.PANEL_BG,
+            width=self.TOP_CARD_MIN_W,
+            height=self.TOP_CARD_MIN_H,
+            highlightthickness=1,
+            highlightbackground=self.PANEL_LINE,
+        )
+        result_card.grid(row=0, column=1, sticky="nsew", padx=(12, 0), pady=(0, 16))
+        result_card.grid_propagate(False)
+        result_area = tk.Frame(result_card, bg=self.PANEL_BG)
+        result_area.pack(fill="both", expand=True, padx=16, pady=14)
+        result_area.grid_rowconfigure(1, weight=1)
+        result_area.grid_columnconfigure(0, weight=1)
+
+        tk.Label(table_area, text="费用矩阵 (单位运费)", bg=self.PANEL_BG,
+                 fg="#111", font=("微软雅黑", 10, "bold")).grid(
+                 row=0, column=0, sticky="w", columnspan=n + 2, pady=(0, 8))
+        matrix = tk.Frame(table_area, bg="#d2c9bd", highlightthickness=1, highlightbackground="#a99f94")
+        matrix.grid(row=1, column=0, sticky="nw")
+
+        def cell_label(parent, text, bg, width=10, font=FONT_SMALL, fg="#222"):
+            return tk.Label(parent, text=text, bg=bg, fg=fg, font=font,
+                            width=width, relief="flat", bd=0)
+
+        cell_label(matrix, "", "#f7efe2", width=9).grid(row=0, column=0, padx=1, pady=1, sticky="nsew")
         for j in range(n):
-            lbl = "任务" if self.mode == "指派" else f"销地{j+1}"
-            tk.Label(self.body, text=lbl, bg="#ffe0b2", font=FONT_SMALL,
-                     relief="ridge", width=8).grid(row=1, column=j + 2, padx=1, pady=1)
+            if self.mode == "指派":
+                lbl = f"任务{j+1}"
+            elif j in self.virtual_dst_cols:
+                lbl = f"虚拟销地{j+1}"
+            else:
+                lbl = f"销地{j+1}"
+            cell_label(matrix, lbl, self.HEADER_BG).grid(row=0, column=j + 1, padx=1, pady=1, sticky="nsew")
         if self.mode != "指派":
-            tk.Label(self.body, text="产量", bg="#ffe0b2", font=FONT_SMALL,
-                     relief="ridge", width=8).grid(row=1, column=n + 2, padx=2)
+            cell_label(matrix, "产量", self.HEADER_BG).grid(row=0, column=n + 1, padx=1, pady=1, sticky="nsew")
 
         self.cost_entries: list[list[tk.Entry]] = []
         self.supply_entries: list[tk.Entry] = []
         for i in range(m):
-            lbl = f"工人{i+1}" if self.mode == "指派" else f"产地{i+1}"
-            tk.Label(self.body, text=lbl, bg="#f5f0e8",
-                     font=FONT_SMALL).grid(row=i + 2, column=1, padx=4)
+            if self.mode == "指派":
+                lbl = f"工人{i+1}"
+            elif i in self.virtual_src_rows:
+                lbl = f"虚拟产地{i+1}"
+            else:
+                lbl = f"产地{i+1}"
+            cell_label(matrix, lbl, "#f7efe2", width=9).grid(row=i + 1, column=0, padx=1, pady=1, sticky="nsew")
             row_e = []
             for j in range(n):
-                e = tk.Entry(self.body, width=8, font=FONT_SMALL, bg="#e8f5e9")
-                e.grid(row=i + 2, column=j + 2, padx=1, pady=0)
+                e = tk.Entry(matrix, width=10, font=FONT_SMALL, bg=self.COST_BG,
+                             relief="flat", bd=0, highlightthickness=0)
+                e.grid(row=i + 1, column=j + 1, padx=1, pady=1, ipady=3, sticky="nsew")
                 self._bind_cell(e, i, j)
                 e.bind("<Control-v>", lambda ev, r=i, c=j: self._paste_from_clipboard(ev, r, c, "cost"))
+                e.bind("<Control-V>", lambda ev, r=i, c=j: self._paste_from_clipboard(ev, r, c, "cost"))
                 row_e.append(e)
             self.cost_entries.append(row_e)
             if self.mode != "指派":
-                se = tk.Entry(self.body, width=8, font=FONT_SMALL, bg="#fff9c4")
-                se.grid(row=i + 2, column=n + 2, padx=1, pady=0)
+                se = tk.Entry(matrix, width=10, font=FONT_SMALL, bg=self.SUPPLY_BG,
+                              relief="flat", bd=0, highlightthickness=0)
+                se.grid(row=i + 1, column=n + 1, padx=1, pady=1, ipady=3, sticky="nsew")
                 self._bind_cell(se, i, n)
                 se.bind("<Control-v>", lambda ev, r=i: self._paste_from_clipboard(ev, r, 0, "supply"))
+                se.bind("<Control-V>", lambda ev, r=i: self._paste_from_clipboard(ev, r, 0, "supply"))
                 self.supply_entries.append(se)
 
         self.demand_entries: list[tk.Entry] = []
         if self.mode != "指派":
-            tk.Label(self.body, text="销量", bg="#f5f0e8",
-                     font=FONT_SMALL).grid(row=m + 2, column=1, padx=2)
+            cell_label(matrix, "销量", "#f7efe2", width=9).grid(row=m + 1, column=0, padx=1, pady=1, sticky="nsew")
             for j in range(n):
-                de = tk.Entry(self.body, width=8, font=FONT_SMALL, bg="#e3f2fd")
-                de.grid(row=m + 2, column=j + 2, padx=1, pady=0)
+                de = tk.Entry(matrix, width=10, font=FONT_SMALL, bg=self.DEMAND_BG,
+                              relief="flat", bd=0, highlightthickness=0)
+                de.grid(row=m + 1, column=j + 1, padx=1, pady=1, ipady=3, sticky="nsew")
                 self._bind_cell(de, m, j)
                 de.bind("<Control-v>", lambda ev, c=j: self._paste_from_clipboard(ev, 0, c, "demand"))
+                de.bind("<Control-V>", lambda ev, c=j: self._paste_from_clipboard(ev, 0, c, "demand"))
                 self.demand_entries.append(de)
+            cell_label(matrix, "", "#f7efe2").grid(row=m + 1, column=n + 1, padx=1, pady=1, sticky="nsew")
 
-        self.result_text = tk.Text(self.body, height=8, width=60,
-                                   font=FONT_SMALL, bg="#fffde7")
-        self.result_text.grid(row=m + 4, column=1, columnspan=n + 3, pady=8, sticky="w")
+        tk.Label(result_area, text="求解结果", bg=self.PANEL_BG,
+                 fg="#111", font=("微软雅黑", 10, "bold")).grid(
+                 row=0, column=0, sticky="w", pady=(0, 8))
+        self.result_text = tk.Text(result_area, height=8, width=66,
+                                   font=FONT_SMALL, bg=self.RESULT_BG,
+                                   relief="flat", bd=0, highlightthickness=1,
+                                   highlightbackground=self.PANEL_LINE)
+        self.result_text.grid(row=1, column=0, sticky="nsew")
         self.entries_built = True
+
+    def _snapshot_entries(self) -> dict:
+        if not self.entries_built:
+            return {}
+        return {
+            "cost": [[e.get() for e in row] for row in self.cost_entries],
+            "supply": [e.get() for e in self.supply_entries],
+            "demand": [e.get() for e in self.demand_entries],
+        }
+
+    def _restore_entries(self, data: dict) -> None:
+        for i, row in enumerate(data.get("cost", [])):
+            if i >= len(self.cost_entries):
+                break
+            for j, value in enumerate(row):
+                if j < len(self.cost_entries[i]):
+                    self.cost_entries[i][j].delete(0, "end")
+                    self.cost_entries[i][j].insert(0, value)
+        for i, value in enumerate(data.get("supply", [])):
+            if i < len(self.supply_entries):
+                self.supply_entries[i].delete(0, "end")
+                self.supply_entries[i].insert(0, value)
+        for j, value in enumerate(data.get("demand", [])):
+            if j < len(self.demand_entries):
+                self.demand_entries[j].delete(0, "end")
+                self.demand_entries[j].insert(0, value)
+
+    def _clear_result_outputs(self) -> None:
+        if hasattr(self, "result_text"):
+            self.result_text.delete("1.0", "end")
+        if hasattr(self, "_lp_result_frame") and self._lp_result_frame.winfo_exists():
+            self._lp_result_frame.destroy()
+
+    def _delete_selected_row(self) -> None:
+        if not self.entries_built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        if cell is None:
+            messagebox.showinfo("删除产地", "请先选中要删除的产地行")
+            return
+        remove_i = cell[0]
+        m = self.n_src.get()
+        if remove_i >= m:
+            messagebox.showinfo("删除产地", "请选择费用矩阵中的产地行")
+            return
+        if m <= (2 if self.mode == "指派" else 1):
+            messagebox.showinfo("删除产地", "已达到最小行数，不能继续删除")
+            return
+        data = self._snapshot_entries()
+        data["cost"].pop(remove_i)
+        if self.mode != "指派" and remove_i < len(data["supply"]):
+            data["supply"].pop(remove_i)
+        self.n_src.set(m - 1)
+        self.virtual_src_rows = {
+            idx - 1 if idx > remove_i else idx
+            for idx in self.virtual_src_rows
+            if idx != remove_i
+        }
+        self._build_table()
+        self._restore_entries(data)
+        self._clear_result_outputs()
+
+    def _insert_selected_row(self) -> None:
+        if not self.entries_built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        insert_i = self.n_src.get() if cell is None else min(cell[0] + 1, self.n_src.get())
+        n = self.n_src.get() if self.mode == "指派" else self.n_dst.get()
+        data = self._snapshot_entries()
+        data["cost"].insert(insert_i, [""] * n)
+        if self.mode != "指派":
+            data["supply"].insert(insert_i, "")
+        else:
+            for row in data["cost"]:
+                row.insert(insert_i, "")
+        self.n_src.set(self.n_src.get() + 1)
+        self.virtual_src_rows = {
+            idx + 1 if idx >= insert_i else idx
+            for idx in self.virtual_src_rows
+        }
+        self._build_table()
+        self._restore_entries(data)
+        self._clear_result_outputs()
+
+    def _delete_selected_col(self) -> None:
+        if self.mode == "指派":
+            self._delete_selected_row()
+            return
+        if not self.entries_built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        if cell is None:
+            messagebox.showinfo("删除销地", "请先选中要删除的销地列")
+            return
+        remove_j = cell[1]
+        n = self.n_dst.get()
+        if remove_j >= n:
+            messagebox.showinfo("删除销地", "请选择费用矩阵中的销地列")
+            return
+        if n <= 1:
+            messagebox.showinfo("删除销地", "至少保留 1 个销地")
+            return
+        data = self._snapshot_entries()
+        for row in data["cost"]:
+            if remove_j < len(row):
+                row.pop(remove_j)
+        if remove_j < len(data["demand"]):
+            data["demand"].pop(remove_j)
+        self.n_dst.set(n - 1)
+        self.virtual_dst_cols = {
+            idx - 1 if idx > remove_j else idx
+            for idx in self.virtual_dst_cols
+            if idx != remove_j
+        }
+        self._build_table()
+        self._restore_entries(data)
+        self._clear_result_outputs()
+
+    def _insert_selected_col(self) -> None:
+        if self.mode == "指派":
+            self._insert_selected_row()
+            return
+        if not self.entries_built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        insert_j = self.n_dst.get() if cell is None else min(cell[1] + 1, self.n_dst.get())
+        data = self._snapshot_entries()
+        for row in data["cost"]:
+            row.insert(insert_j, "")
+        data["demand"].insert(insert_j, "")
+        self.n_dst.set(self.n_dst.get() + 1)
+        self.virtual_dst_cols = {
+            idx + 1 if idx >= insert_j else idx
+            for idx in self.virtual_dst_cols
+        }
+        self._build_table()
+        self._restore_entries(data)
+        self._clear_result_outputs()
+
+    def _add_dummy_destination(self, demand_value: float) -> None:
+        data = self._snapshot_entries()
+        insert_j = self.n_dst.get()
+        for row in data["cost"]:
+            row.append("0")
+        data["demand"].append(self._format_number(demand_value))
+        self.n_dst.set(insert_j + 1)
+        self.virtual_dst_cols.add(insert_j)
+        self._build_table()
+        self._restore_entries(data)
+
+    def _add_dummy_source(self, supply_value: float) -> None:
+        data = self._snapshot_entries()
+        insert_i = self.n_src.get()
+        n = self.n_dst.get()
+        data["cost"].append(["0"] * n)
+        data["supply"].append(self._format_number(supply_value))
+        self.n_src.set(insert_i + 1)
+        self.virtual_src_rows.add(insert_i)
+        self._build_table()
+        self._restore_entries(data)
+
+    def _read_table_data(self):
+        import numpy as np
+
+        m = self.n_src.get()
+        n = self.n_dst.get() if self.mode != "指派" else m
+        cost = np.array([[parse_cost(self.cost_entries[i][j].get())
+                          for j in range(n)] for i in range(m)])
+        if self.mode == "指派":
+            return m, n, cost, [], []
+        supply = [float(self.supply_entries[i].get() or 0) for i in range(m)]
+        demand = [float(self.demand_entries[j].get() or 0) for j in range(n)]
+        return m, n, cost, supply, demand
+
+    @staticmethod
+    def _format_number(value: float) -> str:
+        return str(int(value)) if float(value).is_integer() else str(value)
 
     # ── 求解 ────────────────────────────────────────────
     def _solve(self):
@@ -175,11 +424,8 @@ class TransportPage(tk.Frame, TableEditMixin):
             messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
             return
         try:
-            m = self.n_src.get()
-            n = self.n_dst.get() if self.mode != "指派" else m
-            import numpy as np
-            cost = np.array([[parse_cost(self.cost_entries[i][j].get())
-                              for j in range(n)] for i in range(m)])
+            balance_note = ""
+            m, n, cost, supply, demand = self._read_table_data()
 
             if self.mode == "指派":
                 result = solve_assignment(cost)
@@ -194,8 +440,42 @@ class TransportPage(tk.Frame, TableEditMixin):
                         f"  工人{i+1} → 任务{j+1}  费用={cost[i, j]}\n")
                 return
 
-            supply = [float(self.supply_entries[i].get() or 0) for i in range(m)]
-            demand = [float(self.demand_entries[j].get() or 0) for j in range(n)]
+            if sum(supply) <= 0:
+                messagebox.showwarning("输入错误", "请填写各产地的产量，产量合计必须大于 0")
+                return
+            if sum(demand) <= 0:
+                messagebox.showwarning("输入错误", "请填写各销地的销量，销量合计必须大于 0")
+                return
+            if self.mode == "平衡" and abs(sum(supply) - sum(demand)) > 1e-8:
+                messagebox.showwarning(
+                    "输入错误",
+                    f"产销平衡问题要求产量合计等于销量合计：当前产量 {sum(supply):g}，销量 {sum(demand):g}",
+                )
+                return
+            if self.mode == "产大于销":
+                diff = sum(supply) - sum(demand)
+                if diff < -1e-8:
+                    messagebox.showwarning(
+                        "输入错误",
+                        f"当前是产大于销问题，但销量大于产量：产量 {sum(supply):g}，销量 {sum(demand):g}",
+                    )
+                    return
+                if diff > 1e-8:
+                    self._add_dummy_destination(diff)
+                    balance_note = f"已在上方表格增加虚拟销地，需求量 = {diff:g}，单位运费 = 0"
+                    m, n, cost, supply, demand = self._read_table_data()
+            elif self.mode == "销大于产":
+                diff = sum(demand) - sum(supply)
+                if diff < -1e-8:
+                    messagebox.showwarning(
+                        "输入错误",
+                        f"当前是销大于产问题，但产量大于销量：产量 {sum(supply):g}，销量 {sum(demand):g}",
+                    )
+                    return
+                if diff > 1e-8:
+                    self._add_dummy_source(diff)
+                    balance_note = f"已在上方表格增加虚拟产地，供应量 = {diff:g}，单位运费 = 0"
+                    m, n, cost, supply, demand = self._read_table_data()
             result = solve_transport(cost.tolist(), supply, demand)
 
             self.result_text.delete("1.0", "end")
@@ -205,11 +485,30 @@ class TransportPage(tk.Frame, TableEditMixin):
 
             self.result_text.insert("end",
                 f"最优运输方案  最小总费用 = {result.total_cost:.2f}")
+            if balance_note:
+                self.result_text.insert("end", "\n" + balance_note)
+            display_cost = cost.tolist()
+            display_supply = list(supply)
+            display_demand = list(demand)
+            if result.dummy_added == "col":
+                shortage = sum(supply) - sum(demand)
+                display_cost = [row + [0.0] for row in display_cost]
+                display_demand.append(shortage)
+                self.result_text.insert(
+                    "end",
+                    f"\n已自动增加虚拟销地，需求量 = {shortage:g}，单位运费 = 0",
+                )
+            elif result.dummy_added == "row":
+                shortage = sum(demand) - sum(supply)
+                display_cost.append([0.0] * len(display_demand))
+                display_supply.append(shortage)
+                self.result_text.insert(
+                    "end",
+                    f"\n已自动增加虚拟产地，供应量 = {shortage:g}，单位运费 = 0",
+                )
             x_opt = result.allocation
-            orig_supply = [s for s in supply if s > 0] or supply
-            orig_demand = demand[:n]
-            self._show_lp_result(cost.tolist(), supply, demand,
-                                 x_opt[:m, :n], result.total_cost)
+            self._show_lp_result(display_cost, display_supply, display_demand,
+                                 x_opt, result.total_cost)
 
         except ValueError as e:
             messagebox.showerror("输入错误", str(e))
@@ -243,33 +542,33 @@ class TransportPage(tk.Frame, TableEditMixin):
         if hasattr(self, "_lp_result_frame") and self._lp_result_frame.winfo_exists():
             self._lp_result_frame.destroy()
 
-        real_src = [i for i in range(len(supply)) if supply[i] > 0] or list(range(len(supply)))
         n = len(demand)
-        m = len(real_src)
+        m = len(supply)
         total_vars = m * n
         total_cons = m + n
 
-        c_flat = [float(cost_orig[i][j]) for i in real_src for j in range(n)]
-        x_flat = [float(x_opt[i][j]) for i in real_src for j in range(n)]
-        supply_f = [supply[i] for i in real_src]
+        c_flat = [float(cost_orig[i][j]) for i in range(m) for j in range(n)]
+        x_flat = [float(x_opt[i][j]) for i in range(m) for j in range(n)]
 
         A, b_vec, rels = [], [], []
         for ii in range(m):
             row = [0] * total_vars
             for j in range(n): row[ii * n + j] = 1
-            A.append(row); b_vec.append(supply_f[ii]); rels.append("=")
+            A.append(row); b_vec.append(supply[ii]); rels.append("=")
         for j in range(n):
             row = [0] * total_vars
             for ii in range(m): row[ii * n + j] = 1
             A.append(row); b_vec.append(demand[j]); rels.append("=")
 
-        HDR = "#ffff99"; RHS = "#ffcccc"; OPT = "#b0d0ff"; BG = "#f5f0e8"; W = 7
+        HDR = "#f5ef96"; RHS = "#f6c5c9"; OPT = "#b7d5f5"; BG = self.PAGE_BG; W = 7
+        ROW_LABEL_W = 6
 
         def L(p, text, bg, font=("宋体", 10), **kw):
             return tk.Label(p, text=text, bg=bg, font=font, relief="ridge", **kw)
 
-        outer = tk.Frame(self.body, bg=BG, relief="groove", bd=1)
-        outer.grid(row=m + n + 5, column=0, columnspan=n + 6, pady=6, sticky="w", padx=2)
+        parent = getattr(self, "_lp_result_parent", self.body)
+        outer = tk.Frame(parent, bg=BG, highlightthickness=1, highlightbackground=self.PANEL_LINE)
+        outer.grid(row=1, column=0, columnspan=2, pady=(0, 12), sticky="nw")
         self._lp_result_frame = outer
 
         r = 0
@@ -277,11 +576,11 @@ class TransportPage(tk.Frame, TableEditMixin):
                  font=("宋体", 10, "bold")).grid(
                  row=r, column=0, sticky="w", columnspan=total_vars + 5, padx=4, pady=(4, 0))
         r += 1
-        tk.Label(outer, text="", bg=BG, width=3, relief="flat").grid(row=r, column=0)
+        tk.Label(outer, text="", bg=BG, width=ROW_LABEL_W, relief="flat").grid(row=r, column=0)
         for k in range(total_vars):
             L(outer, xname(k), HDR, width=W).grid(row=r, column=k + 1, padx=1, pady=1)
         r += 1
-        tk.Label(outer, text="", bg=BG, width=3, relief="flat").grid(row=r, column=0)
+        tk.Label(outer, text="", bg=BG, width=ROW_LABEL_W, relief="flat").grid(row=r, column=0)
         for k in range(total_vars):
             v = c_flat[k]
             L(outer, str(int(v) if v == int(v) else v), HDR, width=W).grid(
@@ -295,7 +594,7 @@ class TransportPage(tk.Frame, TableEditMixin):
                  row=r, column=0, sticky="w", columnspan=total_vars + 5, padx=4, pady=(6, 0))
         r += 1
         for ci in range(total_cons):
-            L(outer, str(ci + 1), HDR, width=3).grid(row=r, column=0, padx=1, pady=1)
+            L(outer, str(ci + 1), HDR, width=ROW_LABEL_W).grid(row=r, column=0, padx=1, pady=1)
             for k in range(total_vars):
                 v = A[ci][k]
                 L(outer, str(int(v)) if v else "", "#ffffff",
@@ -307,7 +606,7 @@ class TransportPage(tk.Frame, TableEditMixin):
             L(outer, rels[ci], RHS, width=8).grid(row=r, column=total_vars + 2, padx=1, pady=1)
             L(outer, b_str, RHS, width=14).grid(row=r, column=total_vars + 3, padx=1, pady=1)
             r += 1
-        L(outer, "最优解", HDR, font=("宋体", 10, "bold"), width=3).grid(
+        L(outer, "最优解", HDR, font=("宋体", 10, "bold"), width=ROW_LABEL_W).grid(
             row=r, column=0, padx=1, pady=(6, 2))
         for k in range(total_vars):
             v = x_flat[k]
@@ -324,7 +623,42 @@ class TransportPage(tk.Frame, TableEditMixin):
         except Exception:
             return None
 
-        if "\t" not in text and "\n" not in text.strip():
+        def _is_num(s):
+            value = s.strip()
+            if value == "":
+                return True
+            if value.upper() == "M":
+                return True
+            try:
+                float(value); return True
+            except ValueError:
+                return False
+
+        def _set(entry, val):
+            val = val.strip()
+            if val:
+                entry.delete(0, "end")
+                entry.insert(0, val)
+
+        def _split_row(line: str) -> list[str]:
+            if "\t" in line:
+                cells: list[str] = []
+                for part in line.split("\t"):
+                    stripped = part.strip()
+                    if stripped and not _is_num(stripped) and " " in stripped:
+                        pieces = stripped.split()
+                        if all(_is_num(piece) for piece in pieces):
+                            cells.extend(pieces)
+                            continue
+                    cells.append(part)
+                return cells
+            return line.split()
+
+        raw_rows = [_split_row(ln) for ln in text.strip().splitlines() if ln.strip()]
+        if not raw_rows:
+            return "break"
+
+        if len(raw_rows) == 1 and len(raw_rows[0]) == 1 and "\t" not in text:
             w = event.widget
             try:
                 if w.selection_present():
@@ -334,23 +668,7 @@ class TransportPage(tk.Frame, TableEditMixin):
             w.insert(tk.INSERT, text.strip())
             return "break"
 
-        def _is_num(s):
-            try:
-                float(s.strip()); return True
-            except ValueError:
-                return s.strip() == ""
-
-        def _set(entry, val):
-            val = val.strip()
-            if val:
-                entry.delete(0, "end")
-                entry.insert(0, val)
-
-        raw_rows = [ln.split("\t") for ln in text.strip().splitlines() if ln.strip()]
-        if not raw_rows:
-            return "break"
-
-        skip_row = 1 if any(not _is_num(c) and c.strip() for c in raw_rows[0]) else 0
+        skip_row = 1 if len(raw_rows) > 1 and any(not _is_num(c) and c.strip() for c in raw_rows[0]) else 0
         skip_col = 0
         for row in raw_rows[skip_row:]:
             if row and not _is_num(row[0]) and row[0].strip():
@@ -376,6 +694,7 @@ class TransportPage(tk.Frame, TableEditMixin):
                         _set(self.demand_entries[c], val)
         else:
             demand_row_idx = None
+            has_supply_col = False
             if (self.mode != "指派" and start_r == 0 and start_c == 0 and len(data) > 1):
                 last = data[-1]
                 prev = data[-2]
@@ -390,17 +709,35 @@ class TransportPage(tk.Frame, TableEditMixin):
                 if supply_match or label_match:
                     demand_row_idx = len(data) - 1
 
-            if (start_r == 0 and start_c == 0 and self.mode != "指派"
-                    and demand_row_idx is not None):
-                n_cost_rows = demand_row_idx
-                d_last = data[demand_row_idx][-1].strip() if data[demand_row_idx] else ""
-                c_lasts = [data[ri][-1].strip() for ri in range(n_cost_rows) if data[ri]]
-                has_supply_col = (not d_last and bool(c_lasts)
-                                  and all(_is_num(v) and v for v in c_lasts))
+            if start_r == 0 and start_c == 0:
+                n_cost_rows = demand_row_idx if demand_row_idx is not None else len(data)
+                if self.mode != "指派":
+                    d_last = data[demand_row_idx][-1].strip() if demand_row_idx is not None and data[demand_row_idx] else ""
+                    c_lasts = [data[ri][-1].strip() for ri in range(n_cost_rows) if data[ri]]
+                    header_last = ""
+                    if skip_row == 1 and raw_rows and raw_rows[0]:
+                        header_last = raw_rows[0][-1].strip().lower()
+                    header_supply = any(kw in header_last for kw in ["产量", "供应", "supply"])
+                    fits_current_supply_col = (
+                        demand_row_idx is None
+                        and len({len(row) for row in data[:n_cost_rows] if row}) == 1
+                        and len(data[0]) == n + 1
+                    )
+                    has_supply_col = (
+                        bool(c_lasts)
+                        and all(_is_num(v) and v for v in c_lasts)
+                        and ((demand_row_idx is not None and not d_last) or header_supply or fits_current_supply_col)
+                    )
                 new_m = n_cost_rows
-                new_n = (len(data[0]) - 1) if has_supply_col else len(data[0])
+                new_n = max((len(row) for row in data[:n_cost_rows]), default=0)
+                if self.mode != "指派" and has_supply_col:
+                    new_n -= 1
+                if self.mode == "指派":
+                    new_n = max(new_m, new_n)
                 if new_m > 0 and new_n > 0 and (new_m != m or new_n != n):
-                    self.n_src.set(new_m); self.n_dst.set(new_n)
+                    self.n_src.set(new_m)
+                    if self.mode != "指派":
+                        self.n_dst.set(new_n)
                     self._build_table()
                     m, n = new_m, new_n
 

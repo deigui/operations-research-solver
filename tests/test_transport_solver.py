@@ -25,6 +25,20 @@ def test_unbalanced_supply_exceeds():
     demand = [60, 90]
     result = solve_transport(cost, supply, demand)
     assert result.status == "optimal"
+    assert result.dummy_added == "col"
+
+
+def test_supply_exceeds_adds_dummy_destination_standard_example():
+    cost = [[1800, 1700, 1550], [1600, 1500, 1750]]
+    supply = [3500, 2500]
+    demand = [2500, 1000, 2000]
+    result = solve_transport(cost, supply, demand)
+
+    assert result.status == "optimal"
+    assert result.dummy_added == "col"
+    assert result.allocation.shape == (2, 4)
+    assert abs(result.allocation[:, 3].sum() - 500) < 1e-6
+    assert abs(result.total_cost - 8800000.0) < 1e-6
 
 
 def test_assignment():

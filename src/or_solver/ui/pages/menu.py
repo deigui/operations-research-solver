@@ -34,15 +34,7 @@ class MenuPage(tk.Frame):
         ],
     }
 
-    IMPLEMENTED: set[str] = {
-        "线性规划问题", "纯整数规划", "0-1整数规划", "混合整数规划",
-        "产销平衡问题", "产大于销问题", "销大于产问题", "指派问题",
-        "最大最小准则", "最大最大准则", "后悔值准则", "期望值准则",
-        "乐观系数准则", "等可能性准则",
-        "最短路问题", "最小支撑树",
-        "移动平均法", "指数平滑法", "回归分析法",
-        "合理排班问题",
-    }
+    IMPLEMENTED: set[str] = {item for items in MENU.values() for item in items}
 
     COL_COLORS: dict[str, str] = {
         "决策分析": BTN_PINK,
@@ -54,34 +46,45 @@ class MenuPage(tk.Frame):
         "预测问题": "#ffcc80",
     }
 
-    def __init__(self, master: tk.Widget, controller):
+    def __init__(self, master: tk.Widget, controller, initial_category: str | None = None):
         super().__init__(master, bg=BG_DARK)
         self.controller = controller
+        category = initial_category if initial_category in self.MENU else next(iter(self.MENU))
+        self.active_category = tk.StringVar(value=category)
+        self.category_buttons: dict[str, tk.Button] = {}
         self._build()
 
     def _build(self):
         tk.Label(self, text="运筹学模型求解程序",
                  font=("微软雅黑", 20, "bold"), bg=BG_DARK, fg=FG_GOLD).pack(pady=12)
 
-        grid = tk.Frame(self, bg=BG_DARK)
-        grid.pack(padx=20, pady=4)
+        shell = tk.Frame(self, bg=BG_DARK)
+        shell.pack(fill="both", expand=True, padx=34, pady=(0, 10))
 
-        for col, (cat, items) in enumerate(self.MENU.items()):
-            color = self.COL_COLORS[cat]
-            tk.Label(grid, text=cat, bg=color, fg="#333",
-                     font=("微软雅黑", 11, "bold"),
-                     relief="raised", bd=1, width=12, pady=4
-                     ).grid(row=0, column=col, padx=4, pady=4)
-            for row, item in enumerate(items, 1):
-                state = "normal" if item in self.IMPLEMENTED else "disabled"
-                tk.Button(
-                    grid, text=item, width=12, font=FONT_SMALL,
-                    bg="#e8f5e9" if state == "normal" else "#dddddd",
-                    fg="#222" if state == "normal" else "#888",
-                    relief="groove", bd=1, state=state,
-                    cursor="hand2" if state == "normal" else "arrow",
-                    command=lambda i=item: self.controller.open_solver(i),
-                ).grid(row=row, column=col, padx=4, pady=2)
+        tk.Label(shell, text="一级分类", font=("微软雅黑", 11, "bold"),
+                 bg=BG_DARK, fg="#f0f0f0").pack(anchor="w", pady=(0, 8))
+
+        self.category_bar = tk.Frame(shell, bg=BG_DARK)
+        self.category_bar.pack(fill="x")
+        for col, cat in enumerate(self.MENU.keys()):
+            btn = tk.Button(
+                self.category_bar,
+                text=cat,
+                bg=self.COL_COLORS[cat],
+                fg="#333",
+                font=("微软雅黑", 11, "bold"),
+                relief="raised",
+                bd=1,
+                cursor="hand2",
+                command=lambda c=cat: self._select_category(c),
+            )
+            btn.grid(row=0, column=col, padx=4, pady=4, sticky="ew")
+            self.category_bar.grid_columnconfigure(col, weight=1, uniform="menu_cat")
+            self.category_buttons[cat] = btn
+
+        self.item_panel = tk.Frame(shell, bg="#f7f3ea", highlightthickness=1, highlightbackground="#c8bda7")
+        self.item_panel.pack(fill="both", expand=True, pady=(6, 0))
+        self._render_items()
 
         bot = tk.Frame(self, bg=BG_DARK)
         bot.pack(pady=14)
@@ -91,3 +94,54 @@ class MenuPage(tk.Frame):
         tk.Button(bot, text="退出系统", font=("微软雅黑", 11),
                   bg="#555", fg="#fff", width=12,
                   command=self.controller.quit_app).pack(side="left", padx=8)
+
+    def _select_category(self, category: str) -> None:
+        self.active_category.set(category)
+        self._render_items()
+
+    def select_category(self, category: str) -> None:
+        if category in self.MENU:
+            self._select_category(category)
+
+    def _render_items(self) -> None:
+        for child in self.item_panel.winfo_children():
+            child.destroy()
+
+        category = self.active_category.get()
+        for cat, btn in self.category_buttons.items():
+            btn.configure(relief="sunken" if cat == category else "raised")
+
+        tk.Label(self.item_panel, text=category, font=("微软雅黑", 18, "bold"),
+                 bg="#f7f3ea", fg="#243744").pack(anchor="w", padx=22, pady=(18, 10))
+
+        grid = tk.Frame(self.item_panel, bg="#f7f3ea")
+        grid.pack(fill="both", expand=True, padx=26, pady=(0, 20))
+        for col in range(3):
+            grid.grid_columnconfigure(col, weight=1, uniform="solver_item")
+
+        for idx, item in enumerate(self.MENU[category]):
+            row, col = divmod(idx, 3)
+            state = "normal" if item in self.IMPLEMENTED else "disabled"
+            tk.Button(
+                grid,
+                text=item,
+                font=FONT_SMALL,
+                bg="#e8f5e9" if state == "normal" else "#dddddd",
+                fg="#222" if state == "normal" else "#888",
+                relief="groove",
+                bd=1,
+                state=state,
+                cursor="hand2" if state == "normal" else "arrow",
+                height=3,
+                command=lambda i=item: self._open_item(i),
+            ).grid(row=row, column=col, padx=8, pady=8, sticky="nsew")
+
+        for row in range((len(self.MENU[category]) + 2) // 3):
+            grid.grid_rowconfigure(row, weight=1)
+
+    def _open_item(self, name: str) -> None:
+        open_window = getattr(self.controller, "open_solver_window", None)
+        if callable(open_window):
+            open_window(name)
+        else:
+            self.controller.open_solver(name)

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from or_solver.core.pulp_compat import solve_mip_problem
+
 
 @dataclass
 class LPResult:
@@ -128,143 +130,150 @@ def solve_lp(
 
     result.shadow_prices = shadow
 
-    # ── 目标系数范围（基矩阵法）──────────────────────────
+    # ── 灵敏度分析（基矩阵法）────────────────────────────
     try:
-        A_np = np.array(A_ub, dtype=float)
-        b_np = np.array(b_ub, dtype=float)
-        ms = len(A_ub)
-        A_std = np.hstack([A_np, np.eye(ms)])
-        c_std = np.array(obj + [0.0] * ms)
-        n_std = n + ms
+        # 构建增广矩阵：决策变量列 + 松弛/剩余变量列
+        # ≤ 约束添加松弛 s≥0：A_aug[i,col]=+1
+        # ≥ 约束添加剩余 s≥0：A_aug[i,col]=-1
+        # = 约束不添加
+        slack_info: list = []  # (constraint_idx, sign, aug_col)
+        s_col = n
+        for i, rel in enumerate(rels):
+            if rel in ("≤", "<=", "<"):
+                slack_info.append((i, 1, s_col)); s_col += 1
+            elif rel in ("≥", ">=", ">"):
+                slack_info.append((i, -1, s_col)); s_col += 1
 
-        s_vals = b_np - A_np @ np.array(x)
-        all_vals = np.concatenate([x, s_vals])
+        N = s_col
+        A_aug = np.zeros((m, N))
+        A_aug[:, :n] = np.array(A, dtype=float)
+        for ci, sign, col in slack_info:
+            A_aug[ci, col] = float(sign)
 
-        basic_idx = sorted([j for j in range(n_std) if all_vals[j] > 1e-6])
-        if len(basic_idx) < ms:
-            cands = sorted(range(n_std), key=lambda j: -all_vals[j])
-            for j in cands:
-                if j not in basic_idx:
-                    basic_idx.append(j)
-                if len(basic_idx) == ms:
-                    break
-        basic_idx = sorted(basic_idx[:ms])
+        b_arr = np.array(b, dtype=float)
 
-        B = A_std[:, basic_idx]
-        B_inv = np.linalg.inv(B)
-        c_B = c_std[basic_idx]
+        # 最小化形式目标（松弛/剩余系数=0）
+        c_min_full = np.zeros(N)
+        c_min_full[:n] = [-ci for ci in c] if maximize else list(c)
 
-        rc = np.array(
-            [c_std[k] - float(c_B @ (B_inv @ A_std[:, k])) for k in range(n_std)]
-        )
-        non_basic = [k for k in range(n_std) if k not in basic_idx]
+        # 完整解向量（含松弛/剩余）
+        x_full = np.zeros(N)
+        x_full[:n] = res.x
+        for ci, sign, col in slack_info:
+            ax_i = float(A_aug[ci, :n] @ res.x)
+            x_full[col] = (b_arr[ci] - ax_i) if sign == 1 else (ax_i - b_arr[ci])
 
+        # 基变量识别：x_full > eps 为基变量候选
+        eps_b = 1e-7
+        basic_candidates = [j for j in range(N) if x_full[j] > eps_b]
+
+        if len(basic_candidates) == m:
+            basic_idx = sorted(basic_candidates)
+        elif len(basic_candidates) < m:
+            needed = m - len(basic_candidates)
+            cand_set = set(basic_candidates)
+            zero_vars = [j for j in range(N) if j not in cand_set and x_full[j] >= -eps_b]
+            basic_idx = sorted(basic_candidates + zero_vars[:needed])
+        else:
+            basic_idx = sorted(
+                sorted(basic_candidates, key=lambda j: -x_full[j])[:m]
+            )
+
+        nonbasic_idx = [j for j in range(N) if j not in set(basic_idx)]
+
+        B_mat = A_aug[:, basic_idx]
+        B_inv = np.linalg.inv(B_mat)
+        c_B = c_min_full[basic_idx]
+
+        # 简约费用向量（从基矩阵直接计算，不依赖 HiGHS 内部数据）
+        rc_full = c_min_full - c_B @ B_inv @ A_aug
+
+        # ── 目标函数系数变动范围 ──────────────────────────
         c_lo: list[float] = []
         c_hi: list[float] = []
         c_diff: list[float] = []
+        basic_set = set(basic_idx)
 
         for j in range(n):
-            if j in basic_idx:
-                bi = basic_idx.index(j)
-                r_lo, r_hi = [], []
-                for k in non_basic:
-                    y = float((B_inv @ A_std[:, k])[bi])
-                    rck = rc[k]
-                    if abs(y) < 1e-10:
+            if j in basic_set:
+                p = basic_idx.index(j)
+                r_lo_v: list[float] = []
+                r_hi_v: list[float] = []
+                for k in nonbasic_idx:
+                    eta = float(B_inv[p, :] @ A_aug[:, k])
+                    rc_k = max(0.0, float(rc_full[k]))
+                    if abs(eta) < 1e-10:
                         continue
-                    ratio = -rck / y
-                    if y > 0:
-                        r_lo.append(ratio)
+                    ratio = rc_k / eta          # 注意：不是 -rc_k/eta
+                    if eta > 0:
+                        r_hi_v.append(ratio)    # Δ 上界
                     else:
-                        r_hi.append(ratio)
-                d_lo = max(r_lo) if r_lo else -INF
-                d_hi = min(r_hi) if r_hi else INF
-                c_lo.append(c[j] + d_lo if d_lo > -INF else -INF)
-                c_hi.append(c[j] + d_hi if d_hi < INF else INF)
+                        r_lo_v.append(ratio)    # Δ 下界
+                d_lo = max(r_lo_v) if r_lo_v else -INF
+                d_hi = min(r_hi_v) if r_hi_v else INF
+                # 最小化形式：c_min[j] 可在 [c_min[j]+d_lo, c_min[j]+d_hi] 变动
+                clo_min = c_min_full[j] + (d_lo if d_lo > -INF * 0.9 else -INF)
+                chi_min = c_min_full[j] + (d_hi if d_hi < INF * 0.9 else INF)
+                if maximize:
+                    # c_min[j] = -c[j]，故原始 c[j] 范围 = [-chi_min, -clo_min]
+                    c_lo.append(-chi_min if chi_min < INF * 0.9 else -INF)
+                    c_hi.append(-clo_min if clo_min > -INF * 0.9 else INF)
+                else:
+                    c_lo.append(clo_min)
+                    c_hi.append(chi_min)
                 c_diff.append(0.0)
             else:
-                c_lo.append(-INF)
-                c_hi.append(c[j] + rc[j])
-                c_diff.append(rc[j])
+                # 非基变量（处于下界 0）
+                rc_j_min = max(0.0, float(rc_full[j]))
+                if maximize:
+                    # 最大化：c[j] 最多增加 rc_j_min 才会入基
+                    c_lo.append(-INF)
+                    c_hi.append(c[j] + rc_j_min)
+                    c_diff.append(-rc_j_min)
+                else:
+                    # 最小化：c[j] 最多减少 rc_j_min 才会入基
+                    c_lo.append(c[j] - rc_j_min)
+                    c_hi.append(INF)
+                    c_diff.append(rc_j_min)
 
         result.c_lower = c_lo
         result.c_upper = c_hi
         result.c_diff = c_diff
 
-        # ── 约束右端项范围（扰动法）────────────────────────
-        orig_duals = list(res.ineqlin.marginals) if (
-            hasattr(res, "ineqlin") and res.ineqlin is not None
-        ) else []
+        # ── 约束右端项变动范围 ────────────────────────────
+        # d(x_B)/d(b[i]) = B_inv[:,i]（i-th 列）
+        # x_B[p] + δ·B_inv[p,i] ≥ 0 → 推导 δ 范围
         b_lo2: list[float] = []
         b_hi2: list[float] = []
+        x_B = np.array([x_full[j] for j in basic_idx])
 
-        for i in range(len(b_ub)):
-            # 向下搜索
-            lo_d, hi_d = -1e8, 0.0
-            found_lo = None
-            for _ in range(60):
-                mid = (lo_d + hi_d) / 2
-                bt = list(b_ub)
-                bt[i] = b_ub[i] + mid
-                r2 = linprog(
-                    obj,
-                    A_ub=A_ub or None,
-                    b_ub=bt or None,
-                    A_eq=A_eq or None,
-                    b_eq=b_eq or None,
-                    bounds=bounds,
-                    method="highs",
-                )
-                if (
-                    r2.success
-                    and hasattr(r2, "ineqlin")
-                    and r2.ineqlin is not None
-                    and np.allclose(r2.ineqlin.marginals, orig_duals, atol=1e-4)
-                ):
-                    found_lo = mid
-                    lo_d = mid
+        for i in range(m):
+            col_Bi = B_inv[:, i]
+            lo_r: list[float] = []
+            hi_r: list[float] = []
+            for p in range(m):
+                bi_p = col_Bi[p]
+                if abs(bi_p) < 1e-10:
+                    continue
+                ratio = -float(x_B[p]) / bi_p
+                if bi_p > 0:
+                    lo_r.append(ratio)   # δ 下界
                 else:
-                    hi_d = mid
-            b_lo2.append(b[i] + found_lo if found_lo is not None else -INF)
-
-            # 向上搜索
-            lo_d, hi_d = 0.0, 1e8
-            found_hi = None
-            for _ in range(60):
-                mid = (lo_d + hi_d) / 2
-                bt = list(b_ub)
-                bt[i] = b_ub[i] + mid
-                r2 = linprog(
-                    obj,
-                    A_ub=A_ub or None,
-                    b_ub=bt or None,
-                    A_eq=A_eq or None,
-                    b_eq=b_eq or None,
-                    bounds=bounds,
-                    method="highs",
-                )
-                if (
-                    r2.success
-                    and hasattr(r2, "ineqlin")
-                    and r2.ineqlin is not None
-                    and np.allclose(r2.ineqlin.marginals, orig_duals, atol=1e-4)
-                ):
-                    found_hi = mid
-                    lo_d = mid
-                else:
-                    hi_d = mid
-            b_hi2.append(b[i] + found_hi if found_hi is not None else INF)
+                    hi_r.append(ratio)   # δ 上界
+            d_lo2 = max(lo_r) if lo_r else -INF
+            d_hi2 = min(hi_r) if hi_r else INF
+            b_lo2.append(b[i] + (d_lo2 if d_lo2 > -INF * 0.9 else -INF))
+            b_hi2.append(b[i] + (d_hi2 if d_hi2 < INF * 0.9 else INF))
 
         result.b_lower = b_lo2
         result.b_upper = b_hi2
 
     except Exception:
-        n_ub = len(A_ub)
         result.c_lower = [-INF] * n
         result.c_upper = [INF] * n
         result.c_diff = [0.0] * n
-        result.b_lower = [-INF] * n_ub
-        result.b_upper = [INF] * n_ub
+        result.b_lower = [-INF] * m
+        result.b_upper = [INF] * m
 
     return result
 
@@ -296,23 +305,23 @@ def solve_integer_lp(
     prob = pulp.LpProblem("IP", sense)
 
     if binary_vars:
-        xs = [pulp.LpVariable(f"x{j+1}", cat="Binary") for j in range(n)]
+        xs = [prob.add_variable(f"x{j+1}", cat="Binary") for j in range(n)]
     elif mixed_var_types:
         xs = []
         for j in range(n):
             vtype = mixed_var_types[j] if j < len(mixed_var_types) else "C"
             if vtype == "B":
-                xs.append(pulp.LpVariable(f"x{j+1}", cat="Binary"))
+                xs.append(prob.add_variable(f"x{j+1}", cat="Binary"))
             elif vtype == "I":
-                xs.append(pulp.LpVariable(f"x{j+1}", lowBound=0, cat="Integer"))
+                xs.append(prob.add_variable(f"x{j+1}", lowBound=0, cat="Integer"))
             else:
-                xs.append(pulp.LpVariable(f"x{j+1}", lowBound=0, cat="Continuous"))
+                xs.append(prob.add_variable(f"x{j+1}", lowBound=0, cat="Continuous"))
     elif integer_vars is True:
-        xs = [pulp.LpVariable(f"x{j+1}", lowBound=0, cat="Integer") for j in range(n)]
+        xs = [prob.add_variable(f"x{j+1}", lowBound=0, cat="Integer") for j in range(n)]
     else:
         int_set = set(integer_vars or [])
         xs = [
-            pulp.LpVariable(
+            prob.add_variable(
                 f"x{j+1}",
                 lowBound=0,
                 cat="Integer" if j in int_set else "Continuous",
@@ -333,7 +342,7 @@ def solve_integer_lp(
         else:
             prob += expr == b[i]
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    solve_mip_problem(prob, pulp, msg=0)
 
     if pulp.LpStatus[prob.status] != "Optimal":
         return LPResult(

@@ -23,10 +23,8 @@ class SchedulingPage(tk.Frame, TableEditMixin):
     def _build(self):
         hdr = tk.Frame(self, bg="#c8b89a", relief="raised", bd=1)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="运筹学模型求解系统———合理排班问题",
-                 font=("宋体", 13, "bold"), bg="#c8b89a").pack(pady=4)
         ctrl = tk.Frame(hdr, bg="#c8b89a")
-        ctrl.pack(pady=(0, 4))
+        ctrl.pack(pady=6)
         tk.Label(ctrl, text="时间段数:", bg="#c8b89a", font=FONT_SMALL).pack(side="left", padx=(8, 0))
         tk.Spinbox(ctrl, from_=2, to=14, textvariable=self.n_periods,
                    width=4, font=FONT_SMALL).pack(side="left", padx=2)
@@ -36,8 +34,6 @@ class SchedulingPage(tk.Frame, TableEditMixin):
         tk.Button(ctrl, text="确  定", command=self._build_table,
                   bg="#dddddd", font=FONT_SMALL, width=7).pack(side="left", padx=8)
         tk.Button(ctrl, text="求  解", command=self._solve,
-                  bg="#dddddd", font=FONT_SMALL, width=7).pack(side="left", padx=2)
-        tk.Button(ctrl, text="返  回", command=self.controller.show_menu,
                   bg="#dddddd", font=FONT_SMALL, width=7).pack(side="left", padx=2)
         tk.Button(ctrl, text="恢复历史", command=self._load_history,
                   bg="#ffd700", font=FONT_SMALL, width=8).pack(side="left", padx=6)
@@ -172,6 +168,56 @@ class SchedulingPage(tk.Frame, TableEditMixin):
                                     font=("宋体", 11, "bold"), relief="sunken", width=W)
         self.total_label.grid(row=res_row, column=3, padx=1, pady=2)
         self.built = True
+
+    def _snapshot_entries(self) -> dict:
+        if not self.built:
+            return {}
+        return {
+            "periods": [e.get() for e in self.period_entries],
+            "needs": [e.get() for e in self.need_entries],
+        }
+
+    def _restore_entries(self, data: dict) -> None:
+        for i, value in enumerate(data.get("periods", [])):
+            if i < len(self.period_entries):
+                self.period_entries[i].delete(0, "end")
+                self.period_entries[i].insert(0, value)
+        for i, value in enumerate(data.get("needs", [])):
+            if i < len(self.need_entries):
+                self.need_entries[i].delete(0, "end")
+                self.need_entries[i].insert(0, value)
+
+    def _delete_selected_row(self) -> None:
+        if not self.built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        if cell is None:
+            messagebox.showinfo("删除时段", "请先选中要删除的时段行")
+            return
+        if self.n_periods.get() <= 2:
+            messagebox.showinfo("删除时段", "至少保留 2 个时段")
+            return
+        remove_i = cell[0]
+        data = self._snapshot_entries()
+        data["periods"].pop(remove_i)
+        data["needs"].pop(remove_i)
+        self.n_periods.set(self.n_periods.get() - 1)
+        self._build_table()
+        self._restore_entries(data)
+
+    def _insert_selected_row(self) -> None:
+        if not self.built:
+            messagebox.showwarning("提示", "请先点击【确定】生成输入表格")
+            return
+        cell = self._selected_cell()
+        insert_i = self.n_periods.get() if cell is None else min(cell[0] + 1, self.n_periods.get())
+        data = self._snapshot_entries()
+        data["periods"].insert(insert_i, f"时段{insert_i + 1}")
+        data["needs"].insert(insert_i, "")
+        self.n_periods.set(self.n_periods.get() + 1)
+        self._build_table()
+        self._restore_entries(data)
 
     # ── 求解 ────────────────────────────────────────────
     def _solve(self):

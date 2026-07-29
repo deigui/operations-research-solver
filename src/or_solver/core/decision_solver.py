@@ -58,6 +58,34 @@ def solve_expected_value(
     return DecisionResult("期望值准则", scores, best, scores.index(best))
 
 
+def solve_perfect_information(mat: list[list[float]], probs: list[float]) -> DecisionResult:
+    """全情报准则：计算完全信息期望值和完全信息价值。"""
+    n = len(mat[0]) if mat else 0
+    ev_scores = [sum(row[j] * probs[j] for j in range(n)) for row in mat]
+    ev_best = max(ev_scores)
+    state_best = [max(row[j] for row in mat) for j in range(n)]
+    ev_with_pi = sum(state_best[j] * probs[j] for j in range(n))
+    return DecisionResult(
+        "全情报准则",
+        ev_scores,
+        ev_with_pi,
+        ev_scores.index(ev_best),
+        extra={
+            "expected_value_without_information": ev_best,
+            "expected_value_with_perfect_information": ev_with_pi,
+            "expected_value_of_perfect_information": ev_with_pi - ev_best,
+            "state_best_values": state_best,
+        },
+    )
+
+
+def solve_expected_utility(mat: list[list[float]], probs: list[float]) -> DecisionResult:
+    """效用值准则：按概率计算期望效用，选择期望效用最大的方案。"""
+    result = solve_expected_value(mat, probs)
+    result.criterion = "效用值准则"
+    return result
+
+
 def solve_hurwicz(mat: list[list[float]], alpha: float) -> DecisionResult:
     """乐观系数准则（Hurwicz）。"""
     scores = [alpha * max(row) + (1 - alpha) * min(row) for row in mat]

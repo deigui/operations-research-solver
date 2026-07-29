@@ -34,6 +34,50 @@ def parse_polynomial(s: str) -> dict[int, float]:
     return coefs
 
 
+def _find_variable_names(s: str) -> list[str]:
+    """Return algebraic variable names such as x1, y2 in first-seen form."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"[A-Za-z]+\d+", s):
+        name = match.group(0).lower()
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def _sort_variable_names(names: list[str]) -> list[str]:
+    """Sort x variables first, then other prefixes by prefix and number."""
+    def key(name: str) -> tuple[int, str, int]:
+        m = re.match(r"([a-z]+)(\d+)$", name)
+        if not m:
+            return (1, name, 0)
+        prefix, num = m.group(1), int(m.group(2))
+        return (0 if prefix == "x" else 1, prefix, num)
+
+    return sorted(names, key=key)
+
+
+def _parse_polynomial_with_names(s: str, var_index: dict[str, int]) -> dict[int, float]:
+    """Parse polynomial terms containing named variables from var_index."""
+    s = s.strip().replace(" ", "").replace("－", "-").replace("＋", "+")
+    if s and s[0] not in "+-":
+        s = "+" + s
+    coefs: dict[int, float] = {}
+    number_re = r"(?:\d+(?:\.\d*)?|\.\d+)"
+    term_re = re.compile(rf"([+-])({number_re}?)([A-Za-z]+\d+)")
+    for match in term_re.finditer(s):
+        name = match.group(3).lower()
+        if name not in var_index:
+            continue
+        sign = 1 if match.group(1) == "+" else -1
+        coef_text = match.group(2)
+        coef = float(coef_text) if coef_text else 1.0
+        idx = var_index[name]
+        coefs[idx] = coefs.get(idx, 0.0) + sign * coef
+    return {idx: coef for idx, coef in coefs.items() if abs(coef) > 1e-12}
+
+
 def parse_lp_expr(raw: str) -> dict:
     """解析标准 LP 表达式文本，返回结构化数据。
 
@@ -69,14 +113,10 @@ def parse_lp_expr(raw: str) -> dict:
 
     maximize = bool(re.match(r"(max|MAX)", obj_line, re.I))
     obj_part = re.sub(r"^(max|min)[^=]*=\s*", "", obj_line, flags=re.I)
-    obj_coefs = parse_polynomial(obj_part)
-    if not obj_coefs:
-        raise ValueError("目标函数解析失败，请检查变量格式（x1, x2, ...）")
-
     # 约束行
     REL_RE = re.compile(r"(<=|>=|<|>|=)")
     REL_MAP = {"<=": "≤", ">=": "≥", "<": "≤", ">": "≥", "=": "="}
-    constraints = []
+    constraint_parts = []
     for line in lines:
         if not REL_RE.search(line):
             continue
@@ -89,7 +129,7 @@ def parse_lp_expr(raw: str) -> dict:
         if re.match(r"\s*(最优|Z\s*=)", line):
             continue
         l_clean = line.replace(" ", "")
-        if re.match(r"x\d+>=0$", l_clean) or re.match(r"x\d+<=0$", l_clean):
+        if re.match(r"[A-Za-z]\d+>=0$", l_clean) or re.match(r"[A-Za-z]\d+<=0$", l_clean):
             continue
 
         matched = False
@@ -100,31 +140,235 @@ def parse_lp_expr(raw: str) -> dict:
                     rhs = float(parts[1])
                 except ValueError:
                     continue
-                constraints.append(
-                    {
-                        "coefs": parse_polynomial(parts[0]),
-                        "rel": REL_MAP[sym],
-                        "rhs": rhs,
-                    }
-                )
+                constraint_parts.append((parts[0], REL_MAP[sym], rhs))
                 matched = True
                 break
         if not matched:
             raise ValueError(f"无法解析约束行：{line}")
 
-    if not constraints:
+    if not constraint_parts:
         raise ValueError("找不到约束条件")
 
-    all_vars: set[int] = set(obj_coefs.keys())
-    for con in constraints:
-        all_vars |= set(con["coefs"].keys())
-    if not all_vars:
-        raise ValueError("未识别到变量（格式应为 x1, x2, ...）")
+    var_names = _sort_variable_names(
+        list(dict.fromkeys(_find_variable_names(obj_part + "\n" + "\n".join(p[0] for p in constraint_parts))))
+    )
+    if not var_names:
+        raise ValueError("未识别到变量（格式应为 x1, x2, y1, ...）")
 
-    n_vars = max(all_vars) + 1
+    var_index = {name: idx for idx, name in enumerate(var_names)}
+    constraints = [
+        {
+            "coefs": _parse_polynomial_with_names(lhs, var_index),
+            "rel": rel,
+            "rhs": rhs,
+        }
+        for lhs, rel, rhs in constraint_parts
+    ]
+
+    n_vars = len(var_names)
+    obj_coefs = _parse_polynomial_with_names(obj_part, var_index)
+    if not obj_coefs:
+        nums = re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", obj_part)
+        if nums and all(abs(float(v)) < 1e-12 for v in nums):
+            obj_coefs = {}
+        else:
+            raise ValueError("目标函数解析失败，请检查变量格式（x1, x2, ...）")
     return {
         "maximize": maximize,
         "obj_coefs": obj_coefs,
+        "constraints": constraints,
+        "n_vars": n_vars,
+        "n_cons": len(constraints),
+        "var_names": var_names,
+        "var_types": ["B" if name.startswith("y") else "I" for name in var_names],
+    }
+
+
+def parse_table_lp_expr(
+    raw: str,
+    default_maximize: bool = True,
+    default_rel: str = "≤",
+) -> dict:
+    """解析表格式线性规划文本，返回结构化数据。
+
+    支持格式::
+
+        max
+        15 10 7 13 9
+        5 10 7 0 0 <= 8000
+        6 4 8 6 4 <= 12000
+        3 2 2 3 2 <= 10000
+
+    也支持省略首行 max/min，此时使用 default_maximize；
+    若约束行未显式提供关系符，则默认采用 default_rel，且最后一个数视为 RHS。
+    """
+    raw = normalize_expr(raw)
+    if "# ── 求解结果" in raw:
+        raw = raw[: raw.index("# ── 求解结果")].strip()
+
+    lines = [
+        line.strip()
+        for line in raw.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if not lines:
+        raise ValueError("未找到表格式线性规划数据")
+
+    number_re = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
+
+    def parse_numbers(text: str) -> list[float]:
+        return [float(x) for x in re.findall(number_re, text)]
+
+    maximize = default_maximize
+    obj_line = ""
+    first_line = lines[0]
+    if re.match(r"^(max|min)\b", first_line, re.I):
+        maximize = bool(re.match(r"^max\b", first_line, re.I))
+        rest = re.sub(r"^(max|min)\b", "", first_line, flags=re.I).strip()
+        if re.search(r"[xX]\d+", rest):
+            raise ValueError("检测到代数式变量，请使用标准线性规划表达式格式")
+        if parse_numbers(rest):
+            obj_line = rest
+            lines = lines[1:]
+        else:
+            lines = lines[1:]
+
+    if not obj_line:
+        if not lines:
+            raise ValueError("缺少目标系数行")
+        obj_line = lines[0]
+        lines = lines[1:]
+
+    if re.search(r"[xX]\d+", obj_line):
+        raise ValueError("检测到代数式变量，请使用标准线性规划表达式格式")
+
+    obj_values = parse_numbers(obj_line)
+    if not obj_values:
+        raise ValueError("目标系数行未识别到数字")
+
+    n_vars = len(obj_values)
+    obj_coefs = {
+        j: value for j, value in enumerate(obj_values) if abs(value) > 1e-12
+    }
+
+    rel_map = {"<=": "≤", ">=": "≥", "<": "≤", ">": "≥", "=": "="}
+    constraints = []
+
+    for line in lines:
+        if re.match(r"s\.?\s*t\.?", line, re.I):
+            continue
+        compact = line.replace(" ", "")
+        if re.match(r"x\d+>=0$", compact, re.I) or re.match(r"x\d+<=0$", compact, re.I):
+            continue
+        if re.search(r"[xX]\d+", line):
+            raise ValueError("检测到代数式变量，请使用标准线性规划表达式格式")
+
+        rel_match = re.search(r"(<=|>=|<|>|=)", line)
+        if rel_match:
+            lhs = line[: rel_match.start()]
+            rhs_text = line[rel_match.end() :]
+            coef_values = parse_numbers(lhs)
+            rhs_values = parse_numbers(rhs_text)
+            rel = rel_map[rel_match.group(1)]
+            if not coef_values:
+                raise ValueError(f"约束系数解析失败：{line}")
+            if len(rhs_values) != 1:
+                raise ValueError(f"约束右端常数解析失败：{line}")
+            rhs = rhs_values[0]
+        else:
+            row_values = parse_numbers(line)
+            if not row_values:
+                continue
+            if len(row_values) < 2:
+                raise ValueError(f"约束行至少需要 1 个系数和 1 个常数：{line}")
+            coef_values = row_values[:-1]
+            rhs = row_values[-1]
+            rel = default_rel
+
+        if len(coef_values) > n_vars:
+            raise ValueError(f"约束系数个数超过目标系数个数：{line}")
+
+        padded = coef_values + [0.0] * (n_vars - len(coef_values))
+        constraints.append(
+            {
+                "coefs": {
+                    j: value for j, value in enumerate(padded) if abs(value) > 1e-12
+                },
+                "rel": rel,
+                "rhs": rhs,
+            }
+        )
+
+    if not constraints:
+        raise ValueError("找不到约束条件")
+
+    return {
+        "maximize": maximize,
+        "obj_coefs": obj_coefs,
+        "constraints": constraints,
+        "n_vars": n_vars,
+        "n_cons": len(constraints),
+    }
+
+
+def parse_lp_data_matrix(
+    raw: str,
+    maximize: bool = True,
+    default_rel: str = "≤",
+) -> dict:
+    """解析纯数字数据矩阵，按“最后一列为 RHS，其余列为系数”处理。
+
+    示例::
+
+        2 0 2
+        0 3 1
+        2 2 2
+
+    将被解释为 3 个约束、2 个决策变量，目标函数系数默认全 0。
+    """
+    raw = normalize_expr(raw)
+    lines = [
+        line.strip()
+        for line in raw.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if not lines:
+        raise ValueError("未找到数据矩阵")
+
+    rows: list[list[float]] = []
+    for line in lines:
+        if re.search(r"[xX]\d+", line) or re.match(r"^(max|min)\b", line, re.I):
+            raise ValueError("检测到表达式格式，请使用标准线性规划表达式解析")
+        cells = line.replace("\t", " ").split()
+        if len(cells) < 2:
+            raise ValueError(f"数据矩阵每行至少应包含 1 个系数和 1 个常数项：{line}")
+        try:
+            rows.append([float(v) for v in cells])
+        except ValueError as exc:
+            raise ValueError(f"数据矩阵中存在无法识别的数字：{line}") from exc
+
+    n_vars = max(len(row) for row in rows) - 1
+    if n_vars <= 0:
+        raise ValueError("数据矩阵列数不足，无法识别决策变量")
+
+    constraints = []
+    for row in rows:
+        coef_values = row[:-1]
+        rhs = row[-1]
+        padded = coef_values + [0.0] * (n_vars - len(coef_values))
+        constraints.append(
+            {
+                "coefs": {
+                    j: value for j, value in enumerate(padded) if abs(value) > 1e-12
+                },
+                "rel": default_rel,
+                "rhs": rhs,
+            }
+        )
+
+    return {
+        "maximize": maximize,
+        "obj_coefs": {},
         "constraints": constraints,
         "n_vars": n_vars,
         "n_cons": len(constraints),

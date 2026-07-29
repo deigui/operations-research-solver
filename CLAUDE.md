@@ -9,9 +9,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cd src && python -m or_solver.app      # or from project root:
 python main.py
 
-# Run legacy single-file version
-python 运筹学模型求解工具.py
-
 # Syntax check
 python -m py_compile src/or_solver/app.py
 python -m py_compile main.py
@@ -25,7 +22,7 @@ python -m pytest tests/
 
 # Package as standalone exe
 pip install pyinstaller
-pyinstaller --onefile --windowed --name 运筹学模型求解工具 main.py
+pyinstaller --onefile --windowed --name "运筹学模型求解工具" --paths src main.py
 # Output: dist\运筹学模型求解工具.exe
 ```
 
